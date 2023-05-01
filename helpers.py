@@ -12,6 +12,7 @@ import glob, os
 from autoreject import get_rejection_threshold
 import promptlib
 import autoreject
+import copy
 
 '''
 Constants
@@ -33,6 +34,7 @@ EPOCH_VAR = {
 }
 MONTAGE = 'DATA/montage_perfect.csv'
 ICA_RECAP = 'DATA/ica_recap.csv'
+
 
 '''
 Preprocessing
@@ -152,8 +154,8 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
             t_stamps = stream_event['time_stamps'] - t_origin;
             annots = mne.Annotations(onset=t_stamps, duration = 0., description=target_nb);
             raw_annotated = signal.copy().set_annotations(annots);
+            signal = raw_annotated
             eventss, event_idss = mne.events_from_annotations(raw_annotated);
-            epochs = mne.Epochs(raw_annotated, eventss, event_id, tmin = -2, tmax = 7, baseline=(-2,0), reject=dict(eeg=400e-6), proj=False, reject_by_annotation=None);
         '''
         reject = get_rejection_threshold(epochs)
         epochs = mne.Epochs(raw_annotated, eventss, event_id, tmin = -2, tmax = 7, baseline=(-2,0), reject=dict(eeg=reject), proj=False)
@@ -194,7 +196,7 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
             n_trial = int(len(stream_event['time_stamps'])/30);
             t_stamps = np.empty(0)
             for j in range(n_trial):
-                ts = [stream_event['time_stamps'][30*(j-1)] - t_origin +2 + 9* i for i in range(30)];
+                ts = [stream_event['time_stamps'][30*j] - t_origin + 9* i for i in range(30)];
                 t_stamps = np.concatenate((t_stamps, ts));
             '''
             ts_1 = [stream_event['time_stamps'][0] - t_origin +2 + 9* i for i in range(30)];
@@ -202,11 +204,16 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
             t_stamps = np.concatenate((ts_1, ts_2));
             '''
             t_onset = t_stamps;
-            annots = mne.Annotations(onset=t_onset, duration = 9, description=target_nb);  
+            
+            annots = mne.Annotations(onset=t_onset, duration = 0., description=target_nb);  
+            
+            
+            
             raw_annotated = signal.copy().set_annotations(annots);
+            signal = raw_annotated
             #reject = get_rejection_threshold(signal)
             eventss, event_idss = mne.events_from_annotations(raw_annotated);
-            epochs = mne.Epochs(raw_annotated, eventss, event_idss, tmin = -2, tmax = 7, baseline=(-2,0), reject=dict(eeg=400e-6), proj=False, reject_by_annotation=None)
+            
         '''
         
         epochs = mne.Epochs(raw_annotated, eventss, event_idss, tmin = -2, tmax = 7, baseline=(-2,0), reject=dict(eeg=reject), proj=False)
@@ -219,7 +226,7 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
 
     return signal, eventss, event_idss
 
-def get_epochs(EEG_dict,EVENTS_dict):
+def get_epochs(EEG_dict,EVENTS_dict,baseline=None,shift=0):
     ### Epoch management
     
     conditions = list(EEG_dict.keys())
@@ -229,11 +236,15 @@ def get_epochs(EEG_dict,EVENTS_dict):
         signal = EEG_dict[condition]['signal']
         eventss = EVENTS_dict[condition]['events']
         event_idss = EVENTS_dict[condition]['events_ids']
-
+        
         if "Baseline" in condition:
             epochs = None
         else:
-            epochs = mne.Epochs(signal, eventss, event_idss, tmin = -2, tmax = 7, baseline=(-2,0), preload=True, reject=dict(eeg=400e-6), proj=False, reject_by_annotation=None)
+            tmin = -2
+            tmax = 7
+            epochs = mne.Epochs(signal, eventss, event_idss, tmin = tmin - 0.5, tmax = tmax + 0.5, baseline=baseline)
+            reject = get_rejection_threshold(epochs)
+            epochs = mne.Epochs(signal, eventss, event_idss, tmin = tmin - 0.5, tmax = tmax + 0.5, baseline=baseline,reject=reject)
 
         
         EEG_dict[condition]['epochs'] = epochs
@@ -247,7 +258,9 @@ def read_file(path,filtering='rawBPCAR'):
     xdf_files = []
 
     for file in glob.glob(path+"\*.xdf"):
-        xdf_files.append(file)
+        if 'MIpre' in file or 'MIpost' in file:
+            xdf_files.append(file)
+        
 
     EEG_dict = {}
     EVENTS_dict = {}
@@ -265,7 +278,27 @@ def read_file(path,filtering='rawBPCAR'):
             EVENTS_dict[file_name]['events'] = events
             EVENTS_dict[file_name]['events_ids'] = events_idss
     
-    return EEG_dict,EVENTS_dict
+    EEG_dict_corrected = {}
+    ICA_dict = {}
+    EEG_dict_RAW = copy.deepcopy(EEG_dict)
+
+    for condition in list(EEG_dict.keys()):
+        ICA_dict[condition] = mne.preprocessing.read_ica(path+'/ICA_data/'+condition+'_ica')
+        
+    EEG_dict_corrected = apply_ica(EEG_dict,ICA_dict)
+    
+    EEG_dict_corrected_CAR = copy.deepcopy(EEG_dict_corrected)
+    EEG_dict_corrected_CAR = reject_off_center(EEG_dict_corrected_CAR)
+    for condition in list(EEG_dict.keys()):
+        signal = EEG_dict_corrected_CAR[condition]['signal']
+        #signal.info['bads'].extend(['C6','C5'])
+        signal, ref_data = mne.set_eeg_reference(signal, ref_channels='average', copy=True)
+        EEG_dict_corrected_CAR[condition]['signal'] = signal
+
+
+    
+    #save_fif(EEG_dict_epoched)
+    return EEG_dict_RAW,EEG_dict_corrected,EEG_dict_corrected_CAR,EVENTS_dict
 
 def save_fif(EEG_dict):
     EEG_keys = list(EEG_dict.keys())
@@ -287,6 +320,27 @@ def save_fif(EEG_dict):
         if EEG_dict[condition]['epochs'] != None:
             EEG_dict[condition]['epochs'].save(path + condition + '-epochs.fif',overwrite=True)
     
+def save_bad_epochs(EEG_dict):
+    EEG_keys = list(EEG_dict.keys())
+    subject_ID = EEG_keys[0].split('-')[1].split('_')[0]
+    
+    if int(subject_ID[1:3]) < 11:
+        grp = "Group_Realistic_Arm"
+    else:
+        grp = "Group_Realistic_Arm_Tactile"
+    
+    path = "Data/" + grp + "/" + subject_ID + "/Bad_epochs/" 
+    isExist = os.path.exists(path)
+
+    if not isExist:
+        os.makedirs(path)
+    for condition in EEG_keys:
+        epoch = EEG_dict[condition]['epochs'].copy()
+        epoch.drop_bad()
+        bad_epochs = epoch.plot_drop_log()
+        
+        bad_epochs.savefig(path+condition+'_bad_epochs.png')
+
 def get_montage(csv_file, scale_factor=0.095):
     """
     Get the montage of the EEG data
@@ -350,8 +404,7 @@ def apply_ica(EEG_dict,ICA_dict):
     ica_recap = pd.read_csv(ICA_RECAP)
     EEG_keys = list(EEG_dict.copy().keys())
 
-    EEG_dict_2 = EEG_dict.copy()
-    EEG_dict_corrected = EEG_dict.copy()
+    EEG_dict_corrected = copy.deepcopy(EEG_dict.copy())
     for condition in EEG_keys:
         bad_comp = ica_recap[ica_recap['condition'] == condition]['bad_components'].copy().squeeze()
         if bad_comp != "None":
@@ -361,7 +414,7 @@ def apply_ica(EEG_dict,ICA_dict):
             eeg_corrected = ica.apply(signal.copy(),exclude=bad_comp)
             EEG_dict_corrected[condition]['signal'] = eeg_corrected.copy()
 
-    return EEG_dict_2,EEG_dict_corrected.copy()
+    return EEG_dict_corrected
     
 def save_ica_imgs(ICA_dict,EEG_dict):
     conditions = list(ICA_dict.keys())
@@ -399,11 +452,11 @@ def process_all(folder_idxs,filtering="rawBP"):
             path = 'Data/Group_Realistic_Arm_Tactile/S'+str(idx)
         print("Processing: " + path)
      
-        EEG_dict,EVENTS_dict = read_file(path,filtering);
+        EEG_dict,EVENTS_dict = read_file(path,False,filtering);
         ICA_dict = get_ica(EEG_dict.copy())
         save_ica_imgs(ICA_dict,EEG_dict)
 
-def get_subject(folder_idx):
+def get_subject(folder_idx,filters=None,baseline=None):
     if folder_idx < 11:
         path = 'Data/Group_Realistic_Arm/S'
         if folder_idx < 10:
@@ -414,25 +467,20 @@ def get_subject(folder_idx):
         path = 'Data/Group_Realistic_Arm_Tactile/S'+str(folder_idx)
     print("Processing: " + path)
 
-    EEG_dict,EVENTS_dict = read_file(path,'rawBP');
-    EEG_dict_corrected = {}
-    ICA_dict = {}
-    EEG_dict_2 = EEG_dict
+    EEG_dict_RAW,EEG_dict_corrected,EEG_dict_corrected_CAR,EVENTS_dict = read_file(path,'rawBP');
+    
+    EEG_filtered = {}
 
-    for condition in list(EEG_dict.keys()):
-        ICA_dict[condition] = mne.preprocessing.read_ica(path+'/ICA_data/'+condition+'_ica')
-        
-    EEG_dict,EEG_dict_corrected = apply_ica(EEG_dict,ICA_dict)
-        
-    for condition in list(EEG_dict.keys()):
-        signal = EEG_dict_corrected[condition]['signal']
-        signal, ref_data = mne.set_eeg_reference(signal, ref_channels='average', copy=True)
-        EEG_dict_corrected[condition]['signal'] = signal
+    if filters != None:
 
+        conditions = list(EEG_dict_corrected.keys())
+        MIPOST = [x for x in conditions if 'MIpost' in x][0]
+        MIPRE = [x for x in conditions if 'MIpre' in x][0]
+        for filter in list(filters.keys()):
+            EEG_filtered[filter] = get_epochs(filter_dict(select_keys(EEG_dict_corrected,{MIPOST,MIPRE}),filters[filter]),EVENTS_dict,baseline)
 
-    EEG_dict_epoched = get_epochs(EEG_dict_corrected,EVENTS_dict)
-    #save_fif(EEG_dict_epoched)
-    return EEG_dict_2,EEG_dict_epoched
+    
+    return EEG_dict_RAW,EEG_dict_corrected,EEG_dict_corrected_CAR,EEG_filtered,EVENTS_dict
 
 
 '''
@@ -457,3 +505,35 @@ def load_subject(folder_idxs):
         EEG_dict = {}
         EVENTS_dict = {}
 
+def filter_dict(EEG_dict,filter):
+
+    EGG_dict_filt = copy.deepcopy(EEG_dict)
+    conditions = list(EGG_dict_filt.keys())
+    for condition in conditions:
+        signal = EEG_dict[condition]['signal'].copy().filter(filter[0],filter[1])
+        EGG_dict_filt[condition]['signal'] = signal
+
+    return EGG_dict_filt
+
+def select_keys(d, keys):
+    return {x: d[x] for x in d if x in keys}
+
+def reject_off_center(EEG_dict):
+    for condition in list(EEG_dict.keys()):
+        signal = EEG_dict[condition]['signal']
+        channels = signal.ch_names
+        bad_channels = [ch for ch in channels if ch[0]!='C']
+        signal.info['bads'].extend(bad_channels)
+    return EEG_dict
+
+def get_subject_path(EEG_dict):
+    EEG_keys = list(EEG_dict.keys())
+    subject_ID = EEG_keys[0].split('-')[1].split('_')[0]
+    
+    if int(subject_ID[1:3]) < 11:
+        grp = "Group_Realistic_Arm"
+    else:
+        grp = "Group_Realistic_Arm_Tactile"
+    
+    path = "Data/" + grp + "/" + subject_ID
+    return path 
