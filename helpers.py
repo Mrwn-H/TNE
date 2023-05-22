@@ -902,7 +902,7 @@ def fisher_analysis(EEG_dict,EVENTS_dict,mode='triple'):
     freqs = np.arange(4,41,2)
 
     conditions = list(EEG_dict.keys())
-    save_path = get_subject_path(EEG_dict)
+    save_path = get_dict_path(EEG_dict)
     save_path = save_path + '/Fisher'
     isExist = os.path.exists(save_path)
     if not isExist:
@@ -1020,7 +1020,7 @@ def quick_ERDS(epoch_dict,picked_chs = ['C3','C1','CZ','C2','C4']):
         plt.show()
         del epochs
 
-def get_subject_path(EEG_dict):
+def get_dict_path(EEG_dict):
     EEG_keys = list(EEG_dict.keys())
     subject_ID = EEG_keys[0].split('-')[1].split('_')[0]
     
@@ -1030,5 +1030,21 @@ def get_subject_path(EEG_dict):
         grp = "Group_Realistic_Arm_Tactile"
     
     path = "Data/" + grp + "/" + subject_ID 
+
+    return path
+
+def get_subject_path(subject_ID):
+    
+    if subject_ID < 11:
+        grp = "Group_Realistic_Arm"
+    else:
+        grp = "Group_Realistic_Arm_Tactile"
+    
+    if subject_ID >= 10:
+        subject_ID = "S" + str(subject_ID)
+    else:
+        subject_ID = "S0" + str(subject_ID)
+    
+    path = "Data/" + grp + "/" + subject_ID
 
     return path
