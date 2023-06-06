@@ -248,7 +248,7 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
 
     return signal, eventss, event_idss
 
-def get_epochs(EEG_dict,EVENTS_dict,baseline=None,shift=0):
+def get_epochs(EEG_dict,EVENTS_dict,save=0,baseline=None,shift=0):
     ### Epoch management
     
     conditions = list(EEG_dict.keys())
@@ -266,8 +266,13 @@ def get_epochs(EEG_dict,EVENTS_dict,baseline=None,shift=0):
             tmax = 7
             epochs = mne.Epochs(signal, eventss, event_idss, tmin = tmin - 0.5, tmax = tmax + 0.5, baseline=baseline)
             reject = get_rejection_threshold(epochs)
+            reject_value = reject['eeg']*1e6
+            print(f'Estimated rejection threshold for {condition}: {reject_value} [µV]')
             epochs = mne.Epochs(signal, eventss, event_idss, tmin = tmin - 0.5, tmax = tmax + 0.5, baseline=baseline,reject=reject)
 
+        if save:
+            save_path = get_dict_path(EEG_dict)
+            epochs.save(save_path+'/epoch_'+condition)
         
         EEG_dict[condition]['epochs'] = epochs
 
@@ -310,7 +315,7 @@ def read_file(path,filtering='rawBPCAR',mode='all'):
     EEG_dict_corrected = apply_ica(EEG_dict,ICA_dict,mode)
     
     EEG_dict_corrected_CAR = copy.deepcopy(EEG_dict_corrected)
-    EEG_dict_corrected_CAR = reject_off_center(EEG_dict_corrected_CAR)
+    #EEG_dict_corrected_CAR = reject_off_center(EEG_dict_corrected_CAR)
     for condition in list(EEG_dict.keys()):
         signal = EEG_dict_corrected_CAR[condition]['signal']
         #signal.info['bads'].extend(['C6','C5'])
@@ -524,6 +529,7 @@ def reject_off_center(EEG_dict):
 def reject_bad_chs(Epoch_dict,threshold=10):
     conditions = list(Epoch_dict.keys())
     print('Bad channels identification...')
+    bad_chs_list = []
     for cond in conditions:
         epochs = Epoch_dict[cond]['epochs'].copy()
         n_epochs = epochs.events.shape[0]
@@ -539,8 +545,10 @@ def reject_bad_chs(Epoch_dict,threshold=10):
             if percent >= threshold:
                 bad_chs.append(ch)
         Epoch_dict[cond]['epochs'].info['bads'].extend(bad_chs)
+        if bad_chs != []:
+            bad_chs_list.append(bad_chs)
         print(f'Current condition: {cond}, removing: {bad_chs}')
-    return Epoch_dict
+    return Epoch_dict,bad_chs_list
 
 '''
 Time-Frequency Analysis
@@ -974,7 +982,8 @@ def fisher_analysis(EEG_dict,EVENTS_dict,mode='triple'):
         f_score_dict[cond] = f_scores
     return bandpower_dict,f_score_dict
 
-def quick_ERDS(epoch_dict,picked_chs = ['C3','C1','CZ','C2','C4']):
+def quick_ERDS(epoch_dict):
+
     freqs = np.arange(1, 40)  # frequencies from 2-35Hz
     vmin, vmax = -1, 1.5  # set min and max ERDS values in plot
     baseline = (-2, 0.)  # baseline interval (in s)
@@ -987,6 +996,8 @@ def quick_ERDS(epoch_dict,picked_chs = ['C3','C1','CZ','C2','C4']):
     for cond in list(epoch_dict.keys()):
         
         epochs = epoch_dict[cond]['epochs'].copy()
+        ch_names = epochs.ch_names
+        picked_chs = [x for x in ch_names if x[0] == 'C']
         epochs.load_data()
         epochs.pick(picked_chs)
         epochs.resample(500)
