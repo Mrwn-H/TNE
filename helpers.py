@@ -109,9 +109,10 @@ def raw_processing(raw,filtering,bad_chs,fmin=0.1,fmax=40):
     if "BP" in filtering:
         signal = signal.filter(fmin,fmax)
 
+    '''
     if filtering == 'rawBPCAR':
         signal, ref_data = mne.set_eeg_reference(signal, ref_channels='average', copy=True)
-    
+    '''
     return signal
     
 def to_mne(data_path, filtering, NB_CHANNELS = 64):
@@ -148,6 +149,7 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
 
     ### Filtering and CAR
     subject = file.split('_')[0];
+    subject_id = subject[-2:]
     bad_chs = get_bad_chs(subject);
     
     signal = raw_processing(raw,filtering,bad_chs);
@@ -213,12 +215,20 @@ def to_mne(data_path, filtering, NB_CHANNELS = 64):
             event_idss = None;
         else:
             target_nb = np.array(stream_event['time_series']).squeeze();  # array with target IDs
+            
+            if int(subject_id) > 20:
+                target_nb = np.concatenate((target_nb[30:60],target_nb[90:120]))
+                target_time = stream_event['time_stamps'][30:60].tolist() + stream_event['time_stamps'][90:120].tolist()
+                target_time = np.array(target_time)
+            else:
+                target_time = stream_event['time_stamps']
+
             t_origin = stream_eeg['time_stamps'][0];
 
-            n_trial = int(len(stream_event['time_stamps'])/30);
+            n_trial = int(len(target_time)/30);
             t_stamps = np.empty(0)
             for j in range(n_trial):
-                ts = [stream_event['time_stamps'][30*j] - t_origin + 9* i for i in range(30)];
+                ts = [target_time[30*j] - t_origin + 9* i for i in range(30)];
                 t_stamps = np.concatenate((t_stamps, ts));
             '''
             ts_1 = [stream_event['time_stamps'][0] - t_origin +2 + 9* i for i in range(30)];
@@ -315,7 +325,7 @@ def read_file(path,filtering='rawBPCAR',mode='all'):
     EEG_dict_corrected = apply_ica(EEG_dict,ICA_dict,mode)
     
     EEG_dict_corrected_CAR = copy.deepcopy(EEG_dict_corrected)
-    #EEG_dict_corrected_CAR = reject_off_center(EEG_dict_corrected_CAR)
+    EEG_dict_corrected_CAR = reject_off_center(EEG_dict_corrected_CAR)
     for condition in list(EEG_dict.keys()):
         signal = EEG_dict_corrected_CAR[condition]['signal']
         #signal.info['bads'].extend(['C6','C5'])
@@ -487,7 +497,7 @@ def process_all(folder_idxs,filtering="rawBP",mode='all'):
         save_ica_imgs(ICA_dict,EEG_dict)
 
 def get_subject(folder_idx,mode,filters=None,baseline=None):
-    if folder_idx < 11:
+    if (folder_idx < 11) | ((folder_idx > 20)&(folder_idx <= 25)):
         path = 'Data/Group_Realistic_Arm/S'
         if folder_idx < 10:
             path = path+'0'+str(folder_idx)
@@ -526,7 +536,7 @@ def reject_off_center(EEG_dict):
         EEG_dict[cond]['signal'].info['bads'].extend(bad_ch_names)
     return EEG_dict
 
-def reject_bad_chs(Epoch_dict,threshold=10):
+def reject_bad_chs(Epoch_dict,threshold=10,match=False):
     conditions = list(Epoch_dict.keys())
     print('Bad channels identification...')
     bad_chs_list = []
@@ -544,10 +554,27 @@ def reject_bad_chs(Epoch_dict,threshold=10):
             percent = (count*100)/n_epochs
             if percent >= threshold:
                 bad_chs.append(ch)
-        Epoch_dict[cond]['epochs'].info['bads'].extend(bad_chs)
+        
+        if match == False:
+            Epoch_dict[cond]['epochs'].info['bads'].extend(bad_chs)
+            epochs = Epoch_dict[cond]['epochs'].copy()
+            epochs.load_data()
+            epochs, ref_data = mne.set_eeg_reference(epochs, ref_channels='average', copy=True)
+            Epoch_dict[cond]['epochs'] = epochs.copy()
+            print(f'Current condition: {cond}, removing: {bad_chs}')
+        del epochs
         if bad_chs != []:
-            bad_chs_list.append(bad_chs)
-        print(f'Current condition: {cond}, removing: {bad_chs}')
+            bad_chs_list += bad_chs
+        
+    if match:
+        for cond in conditions:
+            epochs = Epoch_dict[cond]['epochs'].copy()
+            epochs.load_data()
+            epochs.info['bads'].extend(bad_chs_list)
+            epochs, ref_data = mne.set_eeg_reference(epochs, ref_channels='average', copy=True)
+            Epoch_dict[cond]['epochs'] = epochs.copy()
+            del epochs
+        print(f'Removal for all conditions: {bad_chs_list}')
     return Epoch_dict,bad_chs_list
 
 '''
@@ -905,7 +932,7 @@ def fisher_score_matrix(inputs, labels):
 
     return fisher_score
 
-def fisher_analysis(EEG_dict,EVENTS_dict,mode='triple'):
+def fisher_analysis(EEG_dict,mode='triple'):
     
     freqs = np.arange(4,41,2)
 
@@ -977,10 +1004,11 @@ def fisher_analysis(EEG_dict,EVENTS_dict,mode='triple'):
         plt.ylabel('Channels', fontsize = 15) # y-axis label with fontsize 15
 
         plt.show()
-        figure = g.get_figure()    
+        figure = g.get_figure()   
+        plt.show() 
         figure.savefig(save_path+'/'+cond+'_fisher')
         f_score_dict[cond] = f_scores
-    return bandpower_dict,f_score_dict
+    return bandpower_dict,f_score_dict,picks,freqs
 
 def quick_ERDS(epoch_dict):
 
@@ -1035,7 +1063,7 @@ def get_dict_path(EEG_dict):
     EEG_keys = list(EEG_dict.keys())
     subject_ID = EEG_keys[0].split('-')[1].split('_')[0]
     
-    if int(subject_ID[1:3]) < 11:
+    if (int(subject_ID[1:3]) < 11) | ((int(subject_ID[1:3]) > 20)&(int(subject_ID[1:3]) <= 25)):
         grp = "Group_Realistic_Arm"
     else:
         grp = "Group_Realistic_Arm_Tactile"
@@ -1046,7 +1074,7 @@ def get_dict_path(EEG_dict):
 
 def get_subject_path(subject_ID):
     
-    if subject_ID < 11:
+    if (subject_ID < 11) | ((subject_ID > 20)&(subject_ID <= 25)):
         grp = "Group_Realistic_Arm"
     else:
         grp = "Group_Realistic_Arm_Tactile"
